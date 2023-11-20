@@ -138,10 +138,6 @@ class SamPatchEmbeddings(nn.Module):
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
-        if height != self.image_size[0] or width != self.image_size[1]:
-            raise ValueError(
-                f"Input image size ({height}*{width}) doesn't match model ({self.image_size[0]}*{self.image_size[1]})."
-            )
         embeddings = self.projection(pixel_values).permute(0, 2, 3, 1)
         return embeddings
 
@@ -1014,6 +1010,39 @@ class SamVisionEncoder(nn.Module):
     def get_input_embeddings(self):
         return self.patch_embed
 
+    def interpolate_pos_encoding(self, embeddings: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        """
+        This method allows to interpolate the pre-trained position encodings, to be able to use the model on higher
+        resolution images.
+
+        Source:
+        https://github.com/facebookresearch/dino/blob/de9ee3df6cf39fac952ab558447af1fa1365362a/vision_transformer.py#L174
+        """
+        position_embeddings = self.pos_embed.view(1, -1, 1024)
+        num_patches = embeddings.shape[1]*embeddings.shape[2]
+        num_positions = position_embeddings.shape[1]
+        if num_patches == num_positions and height == width:
+            return position_embeddings
+        patch_pos_embed = position_embeddings
+        dim = embeddings.shape[-1]
+        height = height // self.config.patch_size
+        width = width // self.config.patch_size
+        # we add a small number to avoid floating point error in the interpolation
+        # see discussion at https://github.com/facebookresearch/dino/issues/8
+        height, width = height + 0.1, width + 0.1
+        patch_pos_embed = patch_pos_embed.reshape(1, int(math.sqrt(num_positions)), int(math.sqrt(num_positions)), dim)
+        patch_pos_embed = patch_pos_embed.permute(0, 3, 1, 2)
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed,
+            scale_factor=(height / math.sqrt(num_positions), width / math.sqrt(num_positions)),
+            mode="bicubic",
+            align_corners=False,
+        )
+        if int(height) != patch_pos_embed.shape[-2] or int(width) != patch_pos_embed.shape[-1]:
+            raise ValueError("Width or height does not match with the interpolated position embeddings")
+        return patch_pos_embed.permute(0, 2, 3, 1)
+    
+    
     def forward(
         self,
         pixel_values: Optional[torch.FloatTensor] = None,
@@ -1029,10 +1058,10 @@ class SamVisionEncoder(nn.Module):
 
         if pixel_values is None:
             raise ValueError("You have to specify pixel_values")
-
         hidden_states = self.patch_embed(pixel_values)
         if self.pos_embed is not None:
-            hidden_states = hidden_states + self.pos_embed
+            _, _, height, width = pixel_values.shape  
+            hidden_states = hidden_states + self.interpolate_pos_encoding(hidden_states, height, width)
 
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
