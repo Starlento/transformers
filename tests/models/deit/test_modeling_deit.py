@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch DeiT model. """
-
+"""Testing suite for the PyTorch DeiT model."""
 
 import unittest
 import warnings
@@ -50,7 +49,6 @@ if is_torch_available():
         MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING_NAMES,
         MODEL_MAPPING_NAMES,
     )
-    from transformers.models.deit.modeling_deit import DEIT_PRETRAINED_MODEL_ARCHIVE_LIST
 
 
 if is_vision_available():
@@ -81,6 +79,8 @@ class DeiTModelTester:
         num_labels=3,
         scope=None,
         encoder_stride=2,
+        mask_ratio=0.5,
+        attn_implementation="eager",
     ):
         self.parent = parent
         self.batch_size = batch_size
@@ -100,10 +100,14 @@ class DeiTModelTester:
         self.initializer_range = initializer_range
         self.scope = scope
         self.encoder_stride = encoder_stride
+        self.attn_implementation = attn_implementation
 
         # in DeiT, the seq length equals the number of patches + 2 (we add 2 for the [CLS] and distilation tokens)
         num_patches = (image_size // patch_size) ** 2
         self.seq_length = num_patches + 2
+        self.mask_ratio = mask_ratio
+        self.num_masks = int(mask_ratio * self.seq_length)
+        self.mask_length = num_patches
 
     def prepare_config_and_inputs(self):
         pixel_values = floats_tensor([self.batch_size, self.num_channels, self.image_size, self.image_size])
@@ -131,6 +135,7 @@ class DeiTModelTester:
             is_decoder=False,
             initializer_range=self.initializer_range,
             encoder_stride=self.encoder_stride,
+            attn_implementation=self.attn_implementation,
         )
 
     def create_and_check_model(self, config, pixel_values, labels):
@@ -221,6 +226,13 @@ class DeiTModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
     def setUp(self):
         self.model_tester = DeiTModelTester(self)
         self.config_tester = ConfigTester(self, config_class=DeiTConfig, has_text_modality=False, hidden_size=37)
+
+    @unittest.skip(
+        "Since `torch==2.3+cu121`, although this test passes, many subsequent tests have `CUDA error: misaligned address`."
+        "If `nvidia-xxx-cu118` are also installed, no failure (even with `torch==2.3+cu121`)."
+    )
+    def test_multi_gpu_data_parallel_forward(self):
+        super().test_multi_gpu_data_parallel_forward()
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -367,9 +379,9 @@ class DeiTModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in DEIT_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = DeiTModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "facebook/deit-base-distilled-patch16-224"
+        model = DeiTModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
 
 # We will verify our results on an image of cute cats
